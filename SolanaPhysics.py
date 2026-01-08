@@ -1,4 +1,4 @@
-# SolanaPhysics.py - Fully Adaptive (Dynamic ROI + ATR Stop)
+# SolanaPhysicsV25.py - Fully Adaptive (Harmonic Alignment)
 
 import numpy as np
 from pandas import DataFrame
@@ -7,101 +7,99 @@ from freqtrade.strategy import IStrategy
 from freqtrade.persistence import Trade
 import talib.abstract as ta
 
-class SolanaPhysics(IStrategy):
+class SolanaPhysicsV25(IStrategy):
     INTERFACE_VERSION = 3
     timeframe = '5m'
     
-    # 1. ROI (Nur noch Notfall-Fallschirm)
-    minimal_roi = { 
-        "0": 1.00, 
-        "240": 0.01 # Erst nach 4 Stunden Not-Verkauf
-    }
+    # 1. ROI (Notfall-Fallschirm weit oben)
+    minimal_roi = { "0": 10.0 } # Wir wollen den Exit über die Physik regeln
     
-    # 2. STOPLOSS (Der einzig wahre Schutz)
-    # Wir verlassen uns voll auf den ATR-Stoploss (unten im Code)
+    # 2. STOPLOSS (Der Fels - wird durch custom_stoploss dynamisch)
     stoploss = -0.10
     use_custom_stoploss = True
-    
-    # 3. TRAILING STOP -> AUSGESCHALTET!
-    # Wir wollen nicht mehr bei kleinen Wacklern rausfliegen.
     trailing_stop = False
-    
-    # (Die Parameter hier sind jetzt egal, weil False, aber wir lassen sie stehen)
-    # trailing_stop_positive = 0.01
-    # trailing_stop_positive_offset = 0.02
-    
+
     # --- INDIKATOREN ---
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Zeit (Frequenz)
+        # Zeit (Frequenz/Wellenlänge)
         dataframe['dcperiod'] = ta.HT_DCPERIOD(dataframe)
         
-        # Bewegung (Welle)
+        # Bewegung (Sinus-Phase)
         hilbert = ta.HT_SINE(dataframe)
         dataframe['sine'] = hilbert['sine']
         dataframe['leadsine'] = hilbert['leadsine']
         
-        # Hitze (Volatilität)
+        # Hitze & Energie
         dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
+        dataframe['vol_sma'] = ta.SMA(dataframe['volume'], timeperiod=20)
         
         return dataframe
 
-    # --- DYNAMISCHER STOPLOSS (ATR) ---
+    # --- DYNAMISCHER STOPLOSS (ATR & Profit-Kopplung) ---
     def custom_stoploss(self, pair: str, trade: Trade, current_time: datetime,
                         current_rate: float, current_profit: float, **kwargs) -> float:
         
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         last_candle = dataframe.iloc[-1].squeeze()
         
-        # 2x ATR Abstand
-        stop_distance = (last_candle['atr'] * 2) / current_rate
-        dynamic_stop = max(0.01, stop_distance)
-        return max(-0.10, -dynamic_stop)
+        # Die Bedingung: Je höher der Profit, desto enger der ATR-Schutz.
+        # Im Minus: 3x ATR (Raum zum Atmen). Im Plus: 1.5x ATR (Sicherung).
+        multiplier = 3.0 if current_profit < 0.01 else 1.5
+        stop_distance = (last_candle['atr'] * multiplier) / current_rate
+        
+        return max(-0.10, -stop_distance)
 
-    # --- DYNAMISCHER EXIT (Die Innovation) ---
+    # --- DYNAMISCHER EXIT (Zyklus-Kopplung) ---
     def custom_exit(self, pair: str, trade: Trade, current_time: datetime, current_rate: float,
                     current_profit: float, **kwargs):
         
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         last_candle = dataframe.iloc[-1].squeeze()
         
-        # Wir holen uns die aktuelle Zyklus-Länge des Marktes (in Kerzen)
-        # z.B. 20 Kerzen
-        current_cycle = last_candle['dcperiod']
-        
-        # Wie viele Kerzen sind wir schon im Trade?
-        # (Aktuelle Zeit - Startzeit) / 5 Minuten
+        # Kopplung an die Wellenlänge (DCPeriod)
         trade_duration_min = (current_time - trade.open_date_utc).total_seconds() / 60
         trade_candles = trade_duration_min / 5
         
-        # LOGIK:
-        # Wenn wir länger als ein halber Zyklus drin sind...
-        # ...sollten wir eigentlich am Gipfel sein.
-        # Wenn wir dann im Plus sind (> 0.5%) -> RAUS!
-        if (trade_candles > (current_cycle / 2)) and (current_profit > 0.005):
-            return "dynamic_cycle_exit"
+        # Wenn die "Halbwertszeit" der Welle überschritten ist...
+        if (trade_candles > (last_candle['dcperiod'] / 2)):
+            # ...und wir einen harmonischen Gewinn haben (relativ zur ATR)
+            atr_profit_threshold = (last_candle['atr'] / current_rate)
+            if current_profit > max(0.005, atr_profit_threshold):
+                return "harmonic_cycle_exit"
             
         return None
 
-    # --- EINSTIEG ---
+    # --- HARMONISCHER EINSTIEG ---
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Hier bedingen sich die Werte gegenseitig:
+        # 1. Das Signal: Sinus-Kreuzung (Kinematik)
+        # 2. Die Energie: Erforderliches Volumen steigt mit der Reife (Leadsine)
+        #    Frühe Welle (Leadsine klein) -> Wenig Volumen nötig.
+        #    Späte Welle (Leadsine groß) -> Viel Volumen nötig.
+        
         dataframe.loc[
             (
                 (dataframe['sine'] > dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) <= dataframe['leadsine'].shift(1)) &
-                (dataframe['leadsine'] < 0) &
-                (dataframe['dcperiod'] > 12) & 
-                (dataframe['dcperiod'] < 40)
+                
+                # DIE KOPPLUNG: Volumenbedarf = SMA * (1 + Leadsine)
+                # Wenn Leadsine -0.5 ist -> SMA * 0.5 nötig.
+                # Wenn Leadsine +0.5 ist -> SMA * 1.5 nötig.
+                (dataframe['volume'] > (dataframe['vol_sma'] * (1.0 + dataframe['leadsine']))) &
+                
+                # Stabilitätsfilter: Welle muss klar erkennbar sein
+                (dataframe['dcperiod'] > 10)
             ),
             'enter_long'] = 1
         return dataframe
 
-    # --- AUSSTIEG (Signal) ---
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Der Exit-Trend ist nur noch das ultimative physikalische Stopp-Signal
         dataframe.loc[
             (
                 (dataframe['sine'] < dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) >= dataframe['leadsine'].shift(1)) &
-                (dataframe['leadsine'] > 0)
+                (dataframe['leadsine'] > 0.5) # Nur wenn die Welle wirklich kippt
             ),
             'exit_long'] = 1
         return dataframe
