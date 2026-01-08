@@ -50,13 +50,16 @@
         "token": "",
         "chat_id": ""
     },
-        "api_server": {
+         "api_server": {
         "enabled": false,
         "listen_ip_address": "127.0.0.1",
         "listen_port": 8080,
         "verbosity": "error",
-        "jwt_secret_key": "test_secret_key"
+        "jwt_secret_key": "test_secret_key",
+        "username": "freqtrader",
+        "password": "SuperSafePassword123"
     },
+
     "ai": {
         "enabled": false
     },
