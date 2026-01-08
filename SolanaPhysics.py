@@ -8,27 +8,28 @@ from freqtrade.persistence import Trade
 import talib.abstract as ta
 
 class SolanaPhysics(IStrategy):
-    INTERFACE_VERSION = 3
+        INTERFACE_VERSION = 3
     timeframe = '5m'
     
-    # 1. ROI (Gewinnmitnahme)
-    # Wir bleiben konservativ: Schnell Gewinne sichern.
+    # 1. ROI: ZURÜCK ZUM GEWINNER
+    # Wir waren zu gierig. 2% ist ein sicherer Hafen für Solana Scalps.
     minimal_roi = { 
-        "0": 0.04,   # Versuchen, 4% zu holen
-        "20": 0.02,  # Nach 20 Min reichen uns 2%
-        "40": 0.01   # Nach 40 Min nehmen wir auch 1%
+        "0": 0.02,   # Ab 2% Gewinn wird verkauft. Punkt.
+        "40": 0.01   # Wenn es länger dauert, nehmen wir auch 1%.
     }
     
     # 2. Stoploss (Der Not-Aus)
-    # WICHTIG: Hier steht zwar -10%, aber das ist nur der "Hardcap".
-    # Der echte Stoploss wird unten dynamisch per ATR berechnet!
     stoploss = -0.10
-    use_custom_stoploss = True  # Aktiviert die intelligente Berechnung
+    use_custom_stoploss = True  # Wir behalten die intelligente ATR-Berechnung!
     
-    # Trailing Stop (Gewinne laufen lassen)
+    # 3. Trailing Stop (LOCKERER MACHEN)
+    # Vorher: 0.005 (0.5%) -> Zu eng, fliegt sofort raus.
+    # Neu: 0.01 (1.0%) -> Der Kurs darf 1% atmen, bevor wir Gewinne sichern.
     trailing_stop = True
-    trailing_stop_positive = 0.005
-    trailing_stop_positive_offset = 0.015
+    trailing_stop_positive = 0.01  
+    trailing_stop_positive_offset = 0.02 
+    
+   
     
     # --- INDIKATOREN ---
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
