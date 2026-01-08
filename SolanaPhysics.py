@@ -1,4 +1,6 @@
-# SolanaPhysics.py - Adaptive Version (ATR Stoploss & Cycle Filter)
+# SolanaPhysics.py - Adaptive Sniperedition
+# Strategie: Hilbert Sine Wave + ATR Stoploss + Cycle Filter
+# Ziel: Hohe Winrate durch konservative Exits
 
 import numpy as np
 from pandas import DataFrame
@@ -8,28 +10,26 @@ from freqtrade.persistence import Trade
 import talib.abstract as ta
 
 class SolanaPhysics(IStrategy):
-        INTERFACE_VERSION = 3
+    INTERFACE_VERSION = 3
     timeframe = '5m'
     
-    # 1. ROI: ZURÜCK ZUM GEWINNER
-    # Wir waren zu gierig. 2% ist ein sicherer Hafen für Solana Scalps.
+    # 1. ROI: ZURÜCK ZUM GEWINNER (Konservativ)
+    # Wir nehmen Gewinne schnell mit, bevor sie verschwinden.
     minimal_roi = { 
-        "0": 0.02,   # Ab 2% Gewinn wird verkauft. Punkt.
-        "40": 0.01   # Wenn es länger dauert, nehmen wir auch 1%.
+        "0": 0.02,   # 2% Gewinn? Sofort einsacken.
+        "40": 0.01   # Dauert es länger als 40 Min? Dann reichen auch 1%.
     }
     
-    # 2. Stoploss (Der Not-Aus)
+    # 2. STOPLOSS (Thermodynamik)
+    # Hardcap bei -10%, aber der echte Stop wird unten per ATR berechnet.
     stoploss = -0.10
-    use_custom_stoploss = True  # Wir behalten die intelligente ATR-Berechnung!
+    use_custom_stoploss = True
     
-    # 3. Trailing Stop (LOCKERER MACHEN)
-    # Vorher: 0.005 (0.5%) -> Zu eng, fliegt sofort raus.
-    # Neu: 0.01 (1.0%) -> Der Kurs darf 1% atmen, bevor wir Gewinne sichern.
+    # 3. TRAILING STOP (Raum zum Atmen)
+    # Wir lassen dem Kurs 1% Luft, bevor wir absichern.
     trailing_stop = True
-    trailing_stop_positive = 0.01  
-    trailing_stop_positive_offset = 0.02 
-    
-   
+    trailing_stop_positive = 0.01
+    trailing_stop_positive_offset = 0.02
     
     # --- INDIKATOREN ---
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -45,55 +45,51 @@ class SolanaPhysics(IStrategy):
         # Cluster 3: Thermodynamik (Volatilität messen für Stoploss)
         dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
         
-        # (Optional: Volumen für spätere Analysen)
+        # Hilfsdaten für Analyse (Volumen)
         dataframe['vol_mean'] = dataframe['volume'].rolling(window=24).mean()
         dataframe['rvol'] = dataframe['volume'] / dataframe['vol_mean']
         
         return dataframe
 
-    # --- INTELLIGENTER STOPLOSS (Thermodynamik) ---
+    # --- INTELLIGENTER STOPLOSS (ATR) ---
     def custom_stoploss(self, pair: str, trade: Trade, current_time: datetime,
                         current_rate: float, current_profit: float, **kwargs) -> float:
         
-        # Wir holen uns die aktuelle Marktsituation
+        # Daten holen
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         last_candle = dataframe.iloc[-1].squeeze()
         
-        # Wir berechnen den Stop-Abstand basierend auf der aktuellen Hitze (ATR)
-        # Formel: 2x die durchschnittliche Schwankungsbreite
+        # Stop-Abstand: 2x ATR (Markt-Temperatur)
         stop_distance = (last_candle['atr'] * 2) / current_rate
         
-        # Sicherheits-Check:
-        # Niemals enger als 1% (sonst werden wir sofort ausgestoppt)
-        # Niemals weiter als 10% (Not-Aus)
+        # Sicherheits-Regeln:
+        # Nicht enger als 1% (sonst fliegt man durch Rauschen raus)
         dynamic_stop = max(0.01, stop_distance)
         
-        # Rückgabe muss negativ sein (z.B. -0.05)
+        # Rückgabe muss negativ sein
         return max(-0.10, -dynamic_stop)
 
-    # --- EINSTIEG (Kaufen) ---
+    # --- EINSTIEG (Entry) ---
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
             (
-                # A. KINEMATIK: Die perfekte Welle
+                # A. KINEMATIK: Welle kreuzt unten nach oben
                 (dataframe['sine'] > dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) <= dataframe['leadsine'].shift(1)) &
                 (dataframe['leadsine'] < 0) &
                 
-                # B. KALIBRIERUNG: Nur handeln, wenn der Markt "sauber" schwingt
-                # dcperiod < 10: Nur Rauschen (Noise) -> Nicht handeln
-                # dcperiod > 40: Nur Trend (keine Welle) -> Nicht handeln
+                # B. FILTER: Nur in stabilen Zyklen handeln
                 (dataframe['dcperiod'] > 12) & 
                 (dataframe['dcperiod'] < 40)
             ),
             'enter_long'] = 1
         return dataframe
 
-    # --- AUSSTIEG (Verkaufen) ---
+    # --- AUSSTIEG (Exit) ---
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
             (
-                # Verkauf am Wellenberg
+                # A. KINEMATIK: Welle kreuzt oben nach unten
                 (dataframe['sine'] < dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) >= dataframe['leadsine'].shift(1)) &
                 (dataframe['leadsine'] > 0)
