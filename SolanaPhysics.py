@@ -1,92 +1,59 @@
-# SolanaPhysics.py - Adaptive Physics Strategy
-# Architektur: 4 Cluster (Kinematik, Dynamik, Thermodynamik, Struktur)
+# SolanaPhysics.py - Relaxed Version (Only Sine Wave)
 
 import numpy as np
 from pandas import DataFrame
 from freqtrade.strategy import IStrategy
 import talib.abstract as ta
-import freqtrade.vendor.qtpylib.indicators as qtpylib
 
 class SolanaPhysics(IStrategy):
     INTERFACE_VERSION = 3
+    timeframe = '5m'
     
-    # 1. Grund-Konfiguration
-    # ---------------------
-    timeframe = '5m'  # Der Herzschlag (5 Minuten)
-    
-    # ROI: Wann nehmen wir Gewinn mit?
-    # Dynamisch: Zuerst gierig (+4%), später bescheiden
-    minimal_roi = {
-        "0": 0.04,
-        "30": 0.02,
-        "60": 0.01
+    # ROI: Ziemlich konservativ, um Gewinne schnell zu sichern
+    minimal_roi = { 
+        "0": 0.02, 
+        "20": 0.01 
     }
     
-    # Stoploss: Der Not-Aus
-    stoploss = -0.05  # Hartes Limit bei -5%
-    
-    # Trailing Stop: Gewinne absichern
+    stoploss = -0.10
     trailing_stop = True
-    trailing_stop_positive = 0.005  # Ab 0.5% Gewinn aktiv
+    trailing_stop_positive = 0.005
     trailing_stop_positive_offset = 0.015
     
-        # 2. Indikatoren-Berechnung (Die Physik)
-    # --------------------------------------
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        
-        # --- CLUSTER 0: KALIBRIERUNG (Das Gehirn) ---
-        # Wir messen die Eigenfrequenz des Marktes
+        # Cluster 0: Kalibrierung
         dataframe['dcperiod'] = ta.HT_DCPERIOD(dataframe)
         
-        # --- CLUSTER 1: KINEMATIK (Bewegung) ---
-        # FIX: Wir speichern das Ergebnis erst in einer Variable 'hilbert'
-        # und holen uns dann die Spalten einzeln. Das verhindert den Text-Fehler.
+        # Cluster 1: Kinematik (Die Welle)
         hilbert = ta.HT_SINE(dataframe)
         dataframe['sine'] = hilbert['sine']
         dataframe['leadsine'] = hilbert['leadsine']
         
-        # --- CLUSTER 2: DYNAMIK (Masse) ---
-        # RVOL (Relatives Volumen)
+        # Wir berechnen RVOL und ATR trotzdem für die Analyse
         dataframe['vol_mean'] = dataframe['volume'].rolling(window=24).mean()
         dataframe['rvol'] = dataframe['volume'] / dataframe['vol_mean']
-        
-        # --- CLUSTER 3: THERMODYNAMIK (Risiko) ---
-        # ATR (Volatilität)
         dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
         
         return dataframe
 
-
-    # 3. Kauf-Logik (Entry)
-    # ---------------------
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
             (
-                # A. KINEMATIK: Perfektes Timing im Wellental
+                # NUR NOCH DIE WELLE (Kinematik) - Der Scharfschütze
                 (dataframe['sine'] > dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) <= dataframe['leadsine'].shift(1)) &
-                (dataframe['leadsine'] < 0) & # Nur kaufen, wenn Welle unten ist
-                
-                # B. DYNAMIK: Masse muss da sein (Bestätigung)
-                (dataframe['rvol'] > 1.2) &
-                
-                # C. STRUKTUR: Kein Kauf im freien Fall (Preis höher als vor 1h)
-                (dataframe['close'] > dataframe['close'].shift(12))
+                (dataframe['leadsine'] < 0)
             ),
             'enter_long'] = 1
-
         return dataframe
 
-    # 4. Verkauf-Logik (Exit)
-    # -----------------------
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
             (
-                # Verkauf am Wellenberg
+                # Verkauf beim Kreuzen oben
                 (dataframe['sine'] < dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) >= dataframe['leadsine'].shift(1)) &
-                (dataframe['leadsine'] > 0) # Nur verkaufen, wenn Welle oben ist
+                (dataframe['leadsine'] > 0)
             ),
             'exit_long'] = 1
-            
         return dataframe
