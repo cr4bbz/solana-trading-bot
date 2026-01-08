@@ -50,8 +50,12 @@
         "token": "",
         "chat_id": ""
     },
-    "api_server": {
-        "enabled": false
+        "api_server": {
+        "enabled": false,
+        "listen_ip_address": "127.0.0.1",
+        "listen_port": 8080,
+        "verbosity": "error",
+        "jwt_secret_key": "test_secret_key"
     },
     "ai": {
         "enabled": false
