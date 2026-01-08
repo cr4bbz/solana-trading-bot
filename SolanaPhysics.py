@@ -27,8 +27,8 @@ class SolanaPhysics(IStrategy):
     trailing_stop = False
     
     # (Die Parameter hier sind jetzt egal, weil False, aber wir lassen sie stehen)
-    trailing_stop_positive = 0.01
-    trailing_stop_positive_offset = 0.02
+    # trailing_stop_positive = 0.01
+    # trailing_stop_positive_offset = 0.02
     
     # --- INDIKATOREN ---
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
