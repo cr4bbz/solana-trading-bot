@@ -1,27 +1,39 @@
-# SolanaPhysics.py - Relaxed Version (Only Sine Wave)
+# SolanaPhysics.py - Adaptive Version (ATR Stoploss & Cycle Filter)
 
 import numpy as np
 from pandas import DataFrame
+from datetime import datetime
 from freqtrade.strategy import IStrategy
+from freqtrade.persistence import Trade
 import talib.abstract as ta
 
 class SolanaPhysics(IStrategy):
     INTERFACE_VERSION = 3
     timeframe = '5m'
     
-    # ROI: Ziemlich konservativ, um Gewinne schnell zu sichern
+    # 1. ROI (Gewinnmitnahme)
+    # Wir bleiben konservativ: Schnell Gewinne sichern.
     minimal_roi = { 
-        "0": 0.02, 
-        "20": 0.01 
+        "0": 0.04,   # Versuchen, 4% zu holen
+        "20": 0.02,  # Nach 20 Min reichen uns 2%
+        "40": 0.01   # Nach 40 Min nehmen wir auch 1%
     }
     
+    # 2. Stoploss (Der Not-Aus)
+    # WICHTIG: Hier steht zwar -10%, aber das ist nur der "Hardcap".
+    # Der echte Stoploss wird unten dynamisch per ATR berechnet!
     stoploss = -0.10
+    use_custom_stoploss = True  # Aktiviert die intelligente Berechnung
+    
+    # Trailing Stop (Gewinne laufen lassen)
     trailing_stop = True
     trailing_stop_positive = 0.005
     trailing_stop_positive_offset = 0.015
     
+    # --- INDIKATOREN ---
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Cluster 0: Kalibrierung
+        
+        # Cluster 0: Kalibrierung (Zyklusdauer messen)
         dataframe['dcperiod'] = ta.HT_DCPERIOD(dataframe)
         
         # Cluster 1: Kinematik (Die Welle)
@@ -29,28 +41,58 @@ class SolanaPhysics(IStrategy):
         dataframe['sine'] = hilbert['sine']
         dataframe['leadsine'] = hilbert['leadsine']
         
-        # Wir berechnen RVOL und ATR trotzdem für die Analyse
+        # Cluster 3: Thermodynamik (Volatilität messen für Stoploss)
+        dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
+        
+        # (Optional: Volumen für spätere Analysen)
         dataframe['vol_mean'] = dataframe['volume'].rolling(window=24).mean()
         dataframe['rvol'] = dataframe['volume'] / dataframe['vol_mean']
-        dataframe['atr'] = ta.ATR(dataframe, timeperiod=14)
         
         return dataframe
 
+    # --- INTELLIGENTER STOPLOSS (Thermodynamik) ---
+    def custom_stoploss(self, pair: str, trade: Trade, current_time: datetime,
+                        current_rate: float, current_profit: float, **kwargs) -> float:
+        
+        # Wir holen uns die aktuelle Marktsituation
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        last_candle = dataframe.iloc[-1].squeeze()
+        
+        # Wir berechnen den Stop-Abstand basierend auf der aktuellen Hitze (ATR)
+        # Formel: 2x die durchschnittliche Schwankungsbreite
+        stop_distance = (last_candle['atr'] * 2) / current_rate
+        
+        # Sicherheits-Check:
+        # Niemals enger als 1% (sonst werden wir sofort ausgestoppt)
+        # Niemals weiter als 10% (Not-Aus)
+        dynamic_stop = max(0.01, stop_distance)
+        
+        # Rückgabe muss negativ sein (z.B. -0.05)
+        return max(-0.10, -dynamic_stop)
+
+    # --- EINSTIEG (Kaufen) ---
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
             (
-                # NUR NOCH DIE WELLE (Kinematik) - Der Scharfschütze
+                # A. KINEMATIK: Die perfekte Welle
                 (dataframe['sine'] > dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) <= dataframe['leadsine'].shift(1)) &
-                (dataframe['leadsine'] < 0)
+                (dataframe['leadsine'] < 0) &
+                
+                # B. KALIBRIERUNG: Nur handeln, wenn der Markt "sauber" schwingt
+                # dcperiod < 10: Nur Rauschen (Noise) -> Nicht handeln
+                # dcperiod > 40: Nur Trend (keine Welle) -> Nicht handeln
+                (dataframe['dcperiod'] > 12) & 
+                (dataframe['dcperiod'] < 40)
             ),
             'enter_long'] = 1
         return dataframe
 
+    # --- AUSSTIEG (Verkaufen) ---
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         dataframe.loc[
             (
-                # Verkauf beim Kreuzen oben
+                # Verkauf am Wellenberg
                 (dataframe['sine'] < dataframe['leadsine']) &
                 (dataframe['sine'].shift(1) >= dataframe['leadsine'].shift(1)) &
                 (dataframe['leadsine'] > 0)
