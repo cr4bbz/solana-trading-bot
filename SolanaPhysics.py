@@ -11,20 +11,22 @@ class SolanaPhysics(IStrategy):
     INTERFACE_VERSION = 3
     timeframe = '5m'
     
-    # 1. ROI (Der Not-Fallschirm)
-    # Wir setzen das hier absichtlich hoch/spät.
-    # Die eigentliche Musik spielt jetzt im "custom_exit"!
+    # 1. ROI (Nur noch Notfall-Fallschirm)
     minimal_roi = { 
-        "0": 1.00,    # 100% Gewinn (passiert nie, reiner Platzhalter)
-        "60": 0.01    # Nach 1 Stunde Not-Verkauf bei 1%
+        "0": 1.00, 
+        "240": 0.01 # Erst nach 4 Stunden Not-Verkauf
     }
     
-    # 2. STOPLOSS (Thermodynamik / ATR)
+    # 2. STOPLOSS (Der einzig wahre Schutz)
+    # Wir verlassen uns voll auf den ATR-Stoploss (unten im Code)
     stoploss = -0.10
     use_custom_stoploss = True
     
-    # 3. TRAILING STOP
-    trailing_stop = True
+    # 3. TRAILING STOP -> AUSGESCHALTET!
+    # Wir wollen nicht mehr bei kleinen Wacklern rausfliegen.
+    trailing_stop = False
+    
+    # (Die Parameter hier sind jetzt egal, weil False, aber wir lassen sie stehen)
     trailing_stop_positive = 0.01
     trailing_stop_positive_offset = 0.02
     
